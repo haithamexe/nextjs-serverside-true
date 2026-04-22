@@ -36,7 +36,7 @@ async function requestHomeBackend<T>(
 
 export function getHomeTodos() {
   return requestHomeBackend<HomeTodo[]>(
-    "https://jsonplaceholder.typicode.com/todos",
+    "https://restcountries.com/v3.1/all?fields=cca3,flag,flags,coatOfArms,name,capital,currencies,languages,region,population",
     {
       method: "GET",
     },
@@ -63,11 +63,6 @@ export function updateHomePost(data: HomeMutationPayload) {
   );
 }
 
-export async function deleteHomePost(id?: number) {
-  await requestHomeBackend<HomeBackendResponse>(
-    `https://jsonplaceholder.typicode.com/posts/${id ?? ""}`,
-    {
-      method: "DELETE",
-    },
-  );
+export async function deleteHomePost(countryCode: string) {
+  return { countryCode };
 }

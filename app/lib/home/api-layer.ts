@@ -1,6 +1,11 @@
-import type { HomeApiResponse, HomeMutationPayload, HomeTodo } from "./types";
+import type {
+  HomeApiResponse,
+  HomeDeletePayload,
+  HomeMutationPayload,
+  HomeTodo,
+} from "./types";
 
-export type { HomeMutationPayload, HomeTodo } from "./types";
+export type { HomeDeletePayload, HomeMutationPayload, HomeTodo } from "./types";
 
 async function requestHomeApi<T>(
   input: RequestInfo,
@@ -41,9 +46,9 @@ export function updateHomePost(data: HomeMutationPayload) {
   });
 }
 
-export function deleteHomePost(id: number) {
+export function deleteHomePost(countryCode: string) {
   return requestHomeApi<undefined>("/api/home", {
     method: "DELETE",
-    body: JSON.stringify({ id }),
+    body: JSON.stringify({ countryCode } satisfies HomeDeletePayload),
   });
 }

@@ -6,13 +6,21 @@ import {
   getHomeTodos,
   updateHomePost,
 } from "../../lib/home/service";
-import type { HomeMutationPayload } from "../../lib/home/types";
+import {
+  homeDeletePayloadSchema,
+  homeMutationPayloadSchema,
+  proxyGuardHeadersSchema,
+} from "../../lib/home/schemas";
 
 interface ErrorWithMessage {
   message: string;
 }
 
 function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
   if (
     typeof error === "object" &&
     error !== null &&
@@ -25,12 +33,29 @@ function getErrorMessage(error: unknown): string {
   return "Internal Server Error";
 }
 
-export async function GET() {
+function assertProxyGuard(request: NextRequest) {
+  const parsedHeaders = proxyGuardHeadersSchema.safeParse({
+    "x-home-authenticated": request.headers.get("x-home-authenticated"),
+    "x-home-session-id": request.headers.get("x-home-session-id"),
+    "x-home-request-id": request.headers.get("x-home-request-id"),
+  });
+
+  if (!parsedHeaders.success) {
+    throw new Error("Missing or invalid proxy guard headers");
+  }
+
+  return parsedHeaders.data;
+}
+
+export async function GET(request: NextRequest) {
   try {
+    const requestContext = assertProxyGuard(request);
+
     console.log(
       "Test Value from environment variables in GET /api/home:",
       testValue,
     );
+    console.log("Home proxy request id:", requestContext["x-home-request-id"]);
 
     const data = await getHomeTodos();
 
@@ -50,7 +75,10 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const data = (await request.json()) as HomeMutationPayload;
+    assertProxyGuard(request);
+
+    const payload = await request.json();
+    const data = homeMutationPayloadSchema.parse(payload);
 
     const createdPost = await createHomePost(data);
 
@@ -71,7 +99,10 @@ export async function POST(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const postData = (await request.json()) as HomeMutationPayload;
+    assertProxyGuard(request);
+
+    const payload = await request.json();
+    const postData = homeMutationPayloadSchema.parse(payload);
 
     const updatedPost = await updateHomePost(postData);
 
@@ -89,12 +120,15 @@ export async function PUT(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const data = (await request.json()) as Pick<HomeMutationPayload, "id">;
+    assertProxyGuard(request);
 
-    await deleteHomePost(data.id);
+    const payload = await request.json();
+    const data = homeDeletePayloadSchema.parse(payload);
+
+    await deleteHomePost(data.countryCode);
 
     return NextResponse.json(
-      { message: "DELETE request successful" },
+      { message: "DELETE request successful", data },
       { status: 200 },
     );
   } catch (error: unknown) {

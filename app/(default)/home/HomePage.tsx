@@ -1,8 +1,8 @@
-import { getHomeTodos } from "@/app/lib/home/service";
+import { getHomeTodosFromApi } from "@/app/lib/home/server-api";
 import HomePageList from "./HomePageList";
 
 const HomePage = async () => {
-  const todos = await getHomeTodos();
+  const todos = await getHomeTodosFromApi();
 
   return (
     <div>
