@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getHomeTodos } from "../api-layer";
+import { getHomeTodos } from "../client-api";
 import type { HomeTodo } from "../types";
 
 export function useHomeTodos(): HomeTodo[] {

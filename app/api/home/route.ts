@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { testValue } from "../../lib/environments";
+import { testValue } from "../../_lib/environments";
 import {
   createHomePost,
   deleteHomePost,
   getHomeTodos,
   updateHomePost,
-} from "../../lib/home/service";
+} from "../../_lib/home/service";
 import {
   homeDeletePayloadSchema,
   homeMutationPayloadSchema,
   proxyGuardHeadersSchema,
-} from "../../lib/home/schemas";
+} from "../../_lib/home/schemas";
 
 interface ErrorWithMessage {
   message: string;

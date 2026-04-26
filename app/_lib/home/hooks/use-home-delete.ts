@@ -1,4 +1,4 @@
-import { deleteHomePost } from "../api-layer";
+import { deleteHomePost } from "../client-api";
 
 export function useHomeDelete(): {
   deletePost: (countryCode: string) => Promise<void>;

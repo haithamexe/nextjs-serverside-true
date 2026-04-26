@@ -7,6 +7,15 @@ The core idea: fetch data on the server for the initial render, but route that f
 API boundary so auth/session guards, header inspection, and runtime validation can be centralized in the
 `app/api` layer. Client hooks stay thin and own only local interactivity.
 
+The app is organised into three route groups:
+
+- **`(default)`** -- public pages with a shared Header/Footer layout: Home, Blog, Countries
+- **`(auth)`** -- centered card layout: Login, Register
+- **`(dashboard)`** -- sidebar layout with an auth guard: Dashboard, Profile, Settings
+
+A full JWT authentication system sits across the `_lib/auth/` library, the `app/api/auth/` route
+handlers, the `_lib/contexts/auth-context.tsx` React context, and the `(auth)` form pages.
+
 The next improvement area is **component streamlining**: the current layering is good, but some UI files
 still do too much at once. The right direction is to keep container components small, move domain-specific
 state logic into hooks, and move repeated data-shaping into shared helpers so the render tree reads like UI
@@ -14,68 +23,263 @@ instead of business logic.
 
 ---
 
+## Folder Structure
+
+```text
+app/
+  layout.tsx                         # Root layout -- wraps app in <AuthProvider>
+  globals.css
+  favicon.ico
+
+  (auth)/                            # Route group -- centered card layout (no Header/Footer)
+    layout.tsx
+    login/
+      page.tsx
+      _components/
+        LoginForm.tsx
+    register/
+      page.tsx
+      _components/
+        RegisterForm.tsx
+
+  (dashboard)/                       # Route group -- sidebar layout, auth-guarded
+    layout.tsx                       # Wraps children in <DashboardGuard> then <DashboardSidebar>
+    _components/
+      DashboardGuard.tsx             # "use client" -- redirects to /login if not authenticated
+      DashboardSidebar.tsx
+    dashboard/
+      page.tsx
+      profile/
+        page.tsx
+      settings/
+        page.tsx
+
+  (default)/                         # Route group -- public, shared Header/Footer layout
+    layout.tsx
+    page.tsx                         # / -> renders <HomePage />
+    _components/
+      Header.tsx                     # "use client" -- shows user name + logout when authed
+      Footer.tsx
+    _home/                           # Private folder for home-feature colocated files
+    home/
+      HomePage.tsx                   # async server component -- fetches via internal /api/home
+      HomePageList.tsx               # "use client" -- optimistic list + delete
+    blog/
+      layout.tsx
+      page.tsx                       # /blog -> renders <BlogContent />
+      _components/
+        BlogContent.tsx              # async server component -- fetches post list
+      [slug]/
+        page.tsx                     # /blog/:slug -> renders <PostContent slug={slug} />
+        _components/
+          PostContent.tsx            # async server component -- fetches single post
+    countries/
+      layout.tsx
+      page.tsx                       # /countries -> renders <CountriesContent />
+      _components/
+        CountriesContent.tsx         # async server component -- fetches country list
+      [countryCode]/
+        page.tsx                     # /countries/:code -> renders <CountryDetail countryCode={code} />
+        _components/
+          CountryDetail.tsx          # async server component -- fetches single country
+    unauthorized/
+      page.tsx
+
+  api/
+    home/
+      route.ts                       # GET/POST/PUT/DELETE -- guarded, Zod-validated, calls home service
+    blog/
+      route.ts                       # GET (list 20) / POST -- calls blog service
+      [slug]/
+        route.ts                     # GET / PUT / DELETE -- calls blog service
+    countries/
+      route.ts                       # GET (all) -- calls countries service
+      [countryCode]/
+        route.ts                     # GET / DELETE -- calls countries service
+    auth/
+      register/route.ts              # POST -- hash pw, create user, issue tokens, set refresh cookie
+      login/route.ts                 # POST -- verify pw, issue tokens, set refresh cookie
+      refresh/route.ts               # POST -- rotate refresh token, issue new access token
+      logout/route.ts                # POST -- clear refresh cookie
+      me/route.ts                    # GET -- requireAuth -> return PublicUser
+    header/
+      route.ts
+    footer/
+      route.ts
+
+  _lib/                              # Private lib folder -- not a route
+    environments.ts
+    contexts/
+      auth-context.tsx               # AuthProvider -- access token in memory (React state only)
+    auth/
+      types.ts                       # Role, User, PublicUser, AccessTokenPayload, AuthResponse, ...
+      schemas.ts                     # loginSchema, registerSchema (Zod)
+      password.ts                    # server-only -- hashPassword, verifyPassword (bcryptjs)
+      token.ts                       # server-only -- signAccessToken, signRefreshToken, requireAuth, requireRole
+      service.ts                     # server-only -- in-memory Map<id, User> demo store + seeded users
+      client-api.ts                  # loginRequest, registerRequest, refreshRequest, logoutRequest
+      hooks/
+        use-require-auth.ts          # useRequireAuth(role?) -- redirects if not authed or wrong role
+    home/
+      types.ts
+      schemas.ts
+      service.ts                     # server-only -- calls restcountries.com
+      server-api.ts                  # server-only -- calls internal /api/home, forwards cookies
+      client-api.ts                  # client -- calls /api/home
+      hooks/
+        use-home-todos.ts
+        use-home-delete.ts
+    blog/
+      types.ts                       # BlogPost, BlogMutationPayload, BlogApiResponse<T>
+      schemas.ts                     # blogMutationPayloadSchema (Zod)
+      service.ts                     # server-only -- calls jsonplaceholder.typicode.com
+      server-api.ts                  # server-only -- calls internal /api/blog, forwards cookies
+      client-api.ts                  # client -- calls /api/blog
+      hooks/
+        use-blog-posts.ts            # useBlogPosts() -- list hook with mounted guard
+        use-blog-post.ts             # useBlogPost(id) -- single post hook with mounted guard
+    countries/
+      types.ts                       # Country, CountryDetail, CountriesApiResponse<T>
+      schemas.ts                     # countryCodeSchema (Zod -- 3-char, uppercased)
+      service.ts                     # server-only -- calls restcountries.com/v3.1
+      server-api.ts                  # server-only -- calls internal /api/countries, forwards cookies
+      client-api.ts                  # client -- calls /api/countries
+      hooks/
+        use-countries.ts             # useCountries() -- list hook with mounted guard
+        use-country.ts               # useCountry(code) -- single country hook with mounted guard
+
+proxy.ts                             # Edge middleware -- stamps request-id, session, auth headers
+next.config.ts                       # Image remote patterns for flagcdn.com, restcountries.com, etc.
+```
+
+---
+
 ## The Full Layer Stack
 
+### Server read path (all features follow this pattern)
+
 ```
-Browser UI (React)
-    │
-    │  renders initial data from props (no fetch in browser for reads)
-    ▼
-Server Component  ──────────────────────────────────────────────
-  │  app/(default)/home/HomePage.tsx
-  │
-  │  await getHomeTodosFromApi()
-  ▼
-Internal API Client  ───────────────────────────────────────────
-  │  app/lib/home/server-api.ts
-  │
-  │  fetch("/api/home") with forwarded cookies/headers
-  ▼
-Proxy  ─────────────────────────────────────────────────────────
-  │  proxy.ts
-  │
-  │  stamps request-id, pseudo-session, and authenticated headers
-  ▼
-Route Handler  ─────────────────────────────────────────────────
-  │  app/api/home/route.ts
-  │
-  │  validates proxy headers + request payloads with Zod
-  │  calls service
-  ▼
-Server-only Service  ────────────────────────────────────────────
-  │  app/lib/home/service.ts  ("server-only" guard)
-  │
-  │  requestHomeBackend()   ← raw fetch to external API (restcountries.com)
-  ▼
-External API  ───────────────────────────────────────────────────
-  restcountries.com/v3.1/all
+Browser (receives fully populated HTML on first response)
+    |
+    v
+Server Component  (async)
+  e.g. app/(default)/blog/_components/BlogContent.tsx
+       app/(default)/countries/_components/CountriesContent.tsx
+       app/(default)/home/HomePage.tsx
+    |
+    |  await getBlogPostsFromApi()  /  getCountriesFromApi()  /  getHomeTodosFromApi()
+    v
+Internal API Client  (server-only)
+  app/_lib/blog/server-api.ts
+  app/_lib/countries/server-api.ts
+  app/_lib/home/server-api.ts
+    |
+    |  fetch("/api/[feature]") -- reads host from request headers, forwards cookies
+    v
+Proxy  (Edge middleware)
+  proxy.ts
+    |
+    |  stamps x-home-authenticated, x-home-session-id, x-home-request-id
+    v
+Route Handler
+  app/api/blog/route.ts
+  app/api/countries/route.ts
+  app/api/home/route.ts
+    |
+    |  validates proxy headers + Zod payload validation
+    |  calls service layer
+    v
+Server-only Service  ("server-only" guard)
+  app/_lib/blog/service.ts         -> jsonplaceholder.typicode.com/posts
+  app/_lib/countries/service.ts    -> restcountries.com/v3.1
+  app/_lib/home/service.ts         -> restcountries.com/v3.1
+    |
+    v
+External API
+```
 
-─────────────────────────────────────────────────────────────────
-    Client mutation path (delete, create, update):
+### Client mutation path (all features)
 
+```
 Browser UI
-    │
-    │  useHomeDelete()
-    ▼
-Client Hook  ────────────────────────────────────────────────────
-    │  app/lib/home/hooks/use-home-delete.ts
-    │
-    │  deleteHomePost()   ← calls client api-layer
-    ▼
-Client API Layer  ───────────────────────────────────────────────
-    │  app/lib/home/api-layer.ts
-    │
-    │  fetch("/api/home", { method: "DELETE" })
-    ▼
-Route Handler  ──────────────────────────────────────────────────
-    │  app/api/home/route.ts
-    │
-    │  parses request.json()
-    │  calls deleteHomePost() from service
-    ▼
-Server-only Service  ────────────────────────────────────────────
-    app/lib/home/service.ts   ← same service, now used server-side via HTTP
+    |
+    |  useBlogPosts() / useHomeDelete() / useCountries() etc.
+    v
+Client Hook  ("use client")
+  app/_lib/blog/hooks/use-blog-posts.ts
+  app/_lib/home/hooks/use-home-delete.ts
+    |
+    |  calls client-api helper
+    v
+Client API Layer
+  app/_lib/blog/client-api.ts
+  app/_lib/countries/client-api.ts
+  app/_lib/home/client-api.ts
+    |
+    |  fetch("/api/[feature]", { method: POST | PUT | DELETE })
+    v
+Route Handler  ->  Service  ->  External API
+  (same stack as server read path above)
 ```
+
+### Auth path
+
+```
+Browser UI
+  app/(auth)/login/_components/LoginForm.tsx
+  app/(auth)/register/_components/RegisterForm.tsx
+    |
+    |  loginRequest() / registerRequest() from client-api
+    v
+app/_lib/auth/client-api.ts
+    |
+    |  POST /api/auth/login  or  POST /api/auth/register
+    v
+Route Handler
+  app/api/auth/login/route.ts
+  app/api/auth/register/route.ts
+    |
+    |  Zod validation (loginSchema / registerSchema)
+    |  verifyPassword / hashPassword (bcryptjs, 12 rounds)
+    |  signAccessToken + signRefreshToken (jose, HS256)
+    |  Sets HTTP-only refresh cookie (path: /api/auth, SameSite=lax)
+    v
+Auth Service
+  app/_lib/auth/service.ts   -- in-memory Map<string, User> demo store
+    |
+    |  Returns access token in response body (stored in React memory only)
+    |  Returns refresh token only via HTTP-only cookie (never JS-accessible)
+    v
+AuthProvider
+  app/_lib/contexts/auth-context.tsx
+    |
+    |  Stores access token in React state (never localStorage, never cookie)
+    |  silentRefresh() on mount reads /api/auth/refresh via HTTP-only cookie
+    |  getToken() deduplicates concurrent refresh calls (refreshPromiseRef)
+    v
+Protected routes / components
+  app/(dashboard)/  ->  DashboardGuard.tsx calls useRequireAuth()
+  app/(default)/_components/Header.tsx  ->  shows user + logout button
+```
+
+---
+
+## JWT Token Strategy
+
+| Token         | Storage                            | Lifetime | Notes                                         |
+| ------------- | ---------------------------------- | -------- | --------------------------------------------- |
+| Access token  | React state (memory only)          | 15 min   | Never written to cookie or localStorage       |
+| Refresh token | HTTP-only cookie, `path=/api/auth` | 7 days   | Rotated on every use (refresh-token rotation) |
+
+**Why memory for access tokens?** XSS cannot steal what is not in the DOM or localStorage. An
+attacker running arbitrary JS in the page cannot read a value held only in React state.
+
+**Why `path=/api/auth` for the refresh cookie?** The cookie is not sent on every request -- only
+on requests to `/api/auth/*`. This minimises the attack surface for CSRF.
+
+**Silent refresh**: on mount, `AuthProvider` calls `/api/auth/refresh`. If the user has a valid
+refresh cookie (e.g. they navigated back to the site), a new access token is issued transparently
+without a login redirect.
 
 ---
 
@@ -83,469 +287,173 @@ Server-only Service  ───────────────────�
 
 ### 1. Server-side initial fetch (zero client waterfalls)
 
-`HomePage` is an `async` React Server Component. It `await`s `getHomeTodosFromApi()` before
-sending any HTML to the browser. The user receives fully populated HTML on the first
-response — no loading spinner, no skeleton, no second round-trip.
+All page-level data components are `async` React Server Components. The user receives fully
+populated HTML on the first response -- no loading spinner, no skeleton, no second round-trip.
 
 ```ts
-// app/(default)/home/HomePage.tsx
-const HomePage = async () => {
-  const todos = await getHomeTodosFromApi();
-  return <HomePageList todos={todos} />;
-};
+// app/(default)/blog/_components/BlogContent.tsx
+export default async function BlogContent() {
+  const posts = await getBlogPostsFromApi();
+  return <ul>{posts.map(...)}</ul>;
+}
 ```
 
-### 2. The read path now favors protection over the absolute fastest hop
+### 2. The read path favors protection over the absolute fastest hop
 
-The server component now fetches through `/api/home` on purpose. That adds one internal
-hop, but it guarantees the GET request passes through the same guardrail stack as writes:
+Server components fetch through `/api/[feature]` on purpose. That adds one internal hop, but it
+guarantees every GET passes through the same guardrail stack as writes:
 
 - Proxy headers are attached in `proxy.ts`
-- auth/session placeholders are centralized there
-- request validation and request-shape enforcement live in `app/api/home/route.ts`
-- service logic stays pure and does not need to know about auth, headers, or sessions
-
-This is slightly slower than a direct service call, but it is more consistent and safer
-for a backend-first application that wants one enforced API boundary.
+- Auth/session placeholders are centralized there
+- Request validation and shape enforcement live in the route handler
+- Service logic stays pure -- it does not know about auth, headers, or sessions
 
 ### 3. Optimistic client delete (instant perceived response)
 
-When a user clicks Delete, the item disappears from the list immediately in local state
-before the server confirms the operation. This makes the UI feel instant regardless of
-network latency.
+When a user clicks Delete on the Home page, the item disappears immediately in local state
+before the server confirms the operation.
 
 ```ts
 const handleDelete = async (id: string) => {
   setTodosList((prev) => prev.filter((todo) => todo.cca3 !== id)); // instant
-  await deletePost(id); // fires in the background
+  await deletePost(id); // fires in background, rolls back on error
 };
 ```
 
 ### 4. Proxy provides a framework-level request gate
 
-`proxy.ts` runs before `/api/home` and stamps upstream headers like:
+`proxy.ts` runs before every `/api/*` request and stamps upstream headers:
 
 - `x-home-authenticated`
 - `x-home-session-id`
 - `x-home-request-id`
 
-The route handler rejects requests that do not satisfy those headers. Right now this is a
-placeholder auth/session model because the app does not have real auth yet, but the shape
-is correct: real session inspection can replace the placeholder later without changing the
-service layer.
+The home route handler rejects requests that do not satisfy those headers. Real session
+inspection can replace the placeholder in `proxy.ts` without touching the service layer.
 
 ### 5. `server-only` guard prevents leaking server logic to the client bundle
 
-`service.ts` has `import "server-only"` at the top. If you accidentally try to import
-it in a client component, Next.js will throw a build error. This means your external API
-credentials, internal URLs, and backend logic never get shipped to the browser.
+All `service.ts` files have `import "server-only"` at the top. Accidental import in a client
+component throws a build error -- keeping credentials, internal URLs, and backend logic out of
+the browser bundle.
 
 ---
 
-## File Responsibilities (Single Responsibility Principle)
+## File Responsibilities
 
-| File                                    | Environment | Responsibility                                                         |
-| --------------------------------------- | ----------- | ---------------------------------------------------------------------- |
-| `app/lib/home/types.ts`                 | Both        | Shared TypeScript interfaces only. No logic.                           |
-| `proxy.ts`                              | Edge/Proxy  | Adds pseudo-session/auth headers and request IDs before API routes.    |
-| `app/lib/home/service.ts`               | Server only | Raw fetch to external APIs. Error handling for backend calls.          |
-| `app/api/home/route.ts`                 | Server only | Enforces guards, validates with Zod, then calls service.               |
-| `app/lib/home/api-layer.ts`             | Client only | Calls your own `/api/home` endpoint. Wraps fetch with typed helpers.   |
-| `app/lib/home/server-api.ts`            | Server only | Calls internal `/api/home` from server components.                     |
-| `app/lib/home/hooks/use-home-delete.ts` | Client only | React hook. Delegates to api-layer. Keeps hook API clean.              |
-| `app/lib/home/schemas.ts`               | Server only | Zod schemas for headers and request payloads.                          |
-| `app/(default)/home/HomePage.tsx`       | Server only | Async server component. Fetches through internal API and passes props. |
-| `app/(default)/home/HomePageList.tsx`   | Client      | UI + local optimistic state. Receives typed props. Uses hooks.         |
-
----
-
-## Current Readability Assessment
-
-The architecture is in the right direction, but the current `HomePageList` still mixes four concerns:
-
-1. Local optimistic state management.
-2. Mutation orchestration (`deletePost`, rollback).
-3. Data shaping for display (`currencies`, `languages`, `nativeNames`, translation samples).
-4. The full visual card markup.
-
-That file is still understandable, but it is the first place that will become noisy as more actions or UI
-states are added.
-
-### What is already good
-
-- `HomePage` is small and server-only.
-- The guarded API boundary is centralized.
-- The service layer is protected by `server-only`.
-- Delete logic is already partially abstracted into `useHomeDelete`.
-
-### What should be improved next
-
-- Move optimistic list state into a dedicated list hook.
-- Move country-to-dashboard display shaping into a helper or view-model function.
-- Split the large country card into smaller presentational components.
-- Centralize generic request wrappers in shared utilities instead of feature-local copies.
+| File                                             | Env         | Responsibility                                                        |
+| ------------------------------------------------ | ----------- | --------------------------------------------------------------------- |
+| `app/_lib/[feature]/types.ts`                    | Both        | Shared TypeScript interfaces only. No logic.                          |
+| `app/_lib/[feature]/schemas.ts`                  | Server      | Zod schemas for route handler validation.                             |
+| `app/_lib/[feature]/service.ts`                  | Server only | Raw fetch to external API. `"server-only"` guard.                     |
+| `app/_lib/[feature]/server-api.ts`               | Server only | Calls internal `/api/[feature]` from server components.               |
+| `app/_lib/[feature]/client-api.ts`               | Client only | Calls `/api/[feature]` from the browser. Typed wrappers.              |
+| `app/_lib/[feature]/hooks/use-*.ts`              | Client only | React hooks. Delegate to client-api. Own mounted-guard pattern.       |
+| `app/api/[feature]/route.ts`                     | Server only | Validates proxy/auth headers + Zod payload, then calls service.       |
+| `proxy.ts`                                       | Edge        | Stamps pseudo-session/auth headers and request IDs before API routes. |
+| `app/_lib/auth/password.ts`                      | Server only | bcryptjs hashPassword / verifyPassword (12 rounds).                   |
+| `app/_lib/auth/token.ts`                         | Server only | jose JWT sign/verify, requireAuth, requireRole, AuthError.            |
+| `app/_lib/auth/service.ts`                       | Server only | In-memory demo user store (replace with DB for production).           |
+| `app/_lib/auth/client-api.ts`                    | Client only | login/register/refresh/logout fetch wrappers.                         |
+| `app/_lib/contexts/auth-context.tsx`             | Client only | AuthProvider -- access token in memory, silentRefresh on mount.       |
+| `app/(dashboard)/_components/DashboardGuard.tsx` | Client only | Redirects to /login if not authenticated.                             |
+| `app/(default)/_components/Header.tsx`           | Client only | Shows user name + role badge; logout clears token + redirects.        |
 
 ---
 
-## How To Streamline Components
+## Auth File Detail
 
-### 1. Keep server containers minimal
-
-The server component should only do three things:
-
-1. Fetch data.
-2. Pass typed props.
-3. Compose the page.
-
-That means `HomePage` should stay very small:
+### `app/_lib/auth/types.ts`
 
 ```ts
-const HomePage = async () => {
-  const todos = await getHomeTodosFromApi();
-  return <HomeCountriesSection todos={todos} />;
-};
-```
-
-### 2. Move client state orchestration into a list hook
-
-Right now `HomePageList` owns optimistic deletion directly. That works, but it mixes UI and behavior.
-Better structure:
-
-```ts
-// app/lib/home/hooks/use-home-country-list.ts
-export function useHomeCountryList(initialTodos: HomeTodo[]) {
-  const [todos, setTodos] = useState(initialTodos);
-  const { deletePost } = useHomeDelete();
-
-  async function removeCountry(countryCode: string) {
-    const previous = todos;
-    setTodos((prev) => prev.filter((todo) => todo.cca3 !== countryCode));
-
-    try {
-      await deletePost(countryCode);
-    } catch {
-      setTodos(previous);
-    }
-  }
-
-  return { todos, removeCountry };
+type Role = "admin" | "user";
+interface User {
+  id;
+  email;
+  passwordHash;
+  role;
+  createdAt;
+}
+interface PublicUser {
+  id;
+  email;
+  role;
+  createdAt;
+} // no passwordHash
+interface AccessTokenPayload {
+  sub;
+  email;
+  role;
+  type: "access";
+}
+interface RefreshTokenPayload {
+  sub;
+  email;
+  role;
+  type: "refresh";
+}
+interface AuthResponse {
+  user: PublicUser;
+  accessToken: string;
+}
+interface LoginPayload {
+  email;
+  password;
+}
+interface RegisterPayload {
+  email;
+  password;
+  role?;
 }
 ```
 
-Then the component becomes simpler:
+### `app/_lib/auth/schemas.ts`
 
-```ts
-const { todos, removeCountry } = useHomeCountryList(initialTodos);
-```
+- `loginSchema` -- email + password (min 1)
+- `registerSchema` -- email + password (min 8, 1 uppercase, 1 number)
 
-### 3. Move display shaping into a helper
+### Seeded demo users (auth service)
 
-This block is UI-adjacent but not really rendering logic:
-
-- `capitals`
-- `currencies`
-- `languages`
-- `nativeNames`
-- `translationSamples`
-
-Move it into something like:
-
-```ts
-// app/lib/home/presenters.ts
-export function buildCountryDashboard(country: HomeTodo) {
-  return {
-    capitals: country.capital?.join(", ") || "N/A",
-    currencies: country.currencies
-      ? Object.entries(country.currencies).map(([code, value]) => ({
-          code,
-          name: value.name,
-          symbol: value.symbol,
-        }))
-      : [],
-    languages: country.languages ? Object.values(country.languages) : [],
-    nativeNames: country.name.nativeName
-      ? Object.values(country.name.nativeName).map((entry) => entry.common)
-      : [],
-  };
-}
-```
-
-Then the UI reads closer to plain markup.
-
-### 4. Split large UI blocks into presentational pieces
-
-Instead of one large `HomePageList.tsx`, prefer small components like:
-
-- `HomeCountryList`
-- `HomeCountryCard`
-- `HomeCountryMedia`
-- `HomeCountryStats`
-- `HomeCountryLinks`
-
-Suggested structure:
-
-```text
-app/(default)/home/
-  HomePage.tsx                 // server container
-  HomeCountriesClient.tsx      // client boundary for list state
-  components/
-    HomeCountryList.tsx
-    HomeCountryCard.tsx
-    HomeCountryMedia.tsx
-    HomeCountryStats.tsx
-    HomeCountryLinks.tsx
-```
-
-That gives you cleaner reading:
-
-```tsx
-<HomeCountryCard country={country} onDelete={removeCountry} />
-```
-
-instead of a single file that computes, transforms, and renders everything inline.
-
-### 5. Keep hooks behavioral, not transport-aware
-
-Hooks should not know about URLs, request methods, or headers.
-
-Good:
-
-```ts
-const { deletePost } = useHomeDelete();
-```
-
-Bad:
-
-```ts
-await fetch("/api/home", { method: "DELETE" });
-```
-
-That transport logic belongs in the api-layer or a shared request wrapper.
+| Email             | Password | Role  |
+| ----------------- | -------- | ----- |
+| admin@example.com | Admin123 | admin |
+| user@example.com  | User1234 | user  |
 
 ---
 
-## Better Centralization Strategy
+## Blog Feature Detail
 
-The next centralization step is not more layers. It is **better shared primitives**.
+**External API**: `https://jsonplaceholder.typicode.com/posts`
 
-### 1. Shared client request utility
+| Route                    | Handler                         | Service call           |
+| ------------------------ | ------------------------------- | ---------------------- |
+| `GET /api/blog`          | list 20 posts                   | `getBlogPosts()`       |
+| `POST /api/blog`         | create post (Zod validated)     | `createBlogPost(data)` |
+| `GET /api/blog/:slug`    | single post (slug = numeric ID) | `getBlogPost(id)`      |
+| `PUT /api/blog/:slug`    | update (Zod validated)          | `updateBlogPost(data)` |
+| `DELETE /api/blog/:slug` | delete                          | `deleteBlogPost(id)`   |
 
-Instead of each feature owning a private `requestHomeApi`, move the primitive to a shared utility:
-
-```ts
-// app/lib/http/client.ts
-export async function clientRequest<T>(input: RequestInfo, init?: RequestInit) {
-  const response = await fetch(input, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-
-  const payload = await response.json();
-
-  if (!response.ok) {
-    throw new Error(payload.error || "Request failed");
-  }
-
-  return payload.data as T;
-}
-```
-
-Then `app/lib/home/api-layer.ts` becomes tiny.
-
-### 2. Shared server request utility
-
-Do the same for external backend calls:
-
-```ts
-// app/lib/http/server.ts
-import "server-only";
-
-export async function serverRequest<T>(input: string, init?: RequestInit) {
-  const response = await fetch(input, init);
-
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
-
-  return response.json() as Promise<T>;
-}
-```
-
-Then each feature service becomes mostly endpoint-specific functions.
-
-### 3. Shared route helpers
-
-Your routes will become more consistent if they reuse a small route toolkit:
-
-- `assertProxyGuard(request)`
-- `parseJson(request, schema)`
-- `toErrorResponse(error)`
-
-Suggested location:
-
-```text
-app/lib/http/route.ts
-```
-
-This keeps each route focused on behavior instead of repeated plumbing.
-
-### 4. Shared schemas by concern
-
-Keep feature schemas in the feature folder, but move generic patterns into shared schema helpers if they recur:
-
-- guarded header schemas
-- pagination schemas
-- id/code schemas
-- success/error response schemas
-
-### 5. Shared presenters / view models
-
-When the same raw API object is rendered in multiple places, create a presenter layer.
-
-Suggested location:
-
-```text
-app/lib/home/presenters.ts
-```
-
-This gives one place for:
-
-- formatting population
-- deciding fallback text
-- selecting image sources
-- shaping currencies/languages into UI-friendly arrays
+**UI**: Both list and detail pages are async Server Components fetching via `server-api.ts`. The
+slug in the URL is a string; it is converted to `Number(slug)` before the service call.
 
 ---
 
-## How to Add More Features Using the Same Pattern
+## Countries Feature Detail
 
-### Adding a new guarded read (e.g. get country by code)
+**External API**: `https://restcountries.com/v3.1`
 
-**Step 1 — service.ts** (server, calls external API)
+| Route                         | Handler                             | Service call       |
+| ----------------------------- | ----------------------------------- | ------------------ |
+| `GET /api/countries`          | all countries (list fields only)    | `getCountries()`   |
+| `GET /api/countries/:code`    | single country (detail fields)      | `getCountry(code)` |
+| `DELETE /api/countries/:code` | placeholder delete (Zod code check) | --                 |
 
-```ts
-export function getCountryByCode(code: string) {
-  return requestHomeBackend<HomeTodo>(
-    `https://restcountries.com/v3.1/alpha/${code}?fields=cca3,name,flag,flags`,
-  );
-}
-```
+**Notes**:
 
-**Step 2 — route.ts** (required if you want all reads to pass auth/validation)
-
-```ts
-export async function GET(request: NextRequest) {
-  const code = request.nextUrl.searchParams.get("code");
-  const data = await getCountryByCode(code ?? "");
-  return NextResponse.json({ data });
-}
-```
-
-**Step 3 — Server component** (consumes internal API, not service directly)
-
-```ts
-const CountryPage = async ({ params }: { params: { code: string } }) => {
-  const country = await requestInternalHomeApi(`/api/home?code=${params.code}`);
-  return <CountryDetail country={country} />;
-};
-```
-
----
-
-### Adding a new mutation (e.g. add to favourites)
-
-**Step 1 — api-layer.ts** (client, calls your route)
-
-```ts
-export function addFavourite(cca3: string) {
-  return requestHomeApi<undefined>("/api/favourites", {
-    method: "POST",
-    body: JSON.stringify({ cca3 }),
-  });
-}
-```
-
-**Step 2 — Hook** (client, wraps the api-layer call)
-
-```ts
-// app/lib/home/hooks/use-home-favourite.ts
-"use client";
-import { addFavourite } from "../api-layer";
-
-export function useHomeFavourite() {
-  async function toggleFavourite(cca3: string) {
-    await addFavourite(cca3);
-  }
-  return { toggleFavourite };
-}
-```
-
-**Step 3 — Component** (consumes the hook, no fetch logic in the UI)
-
-```ts
-const { toggleFavourite } = useHomeFavourite();
-<button onClick={() => void toggleFavourite(country.cca3)}>★</button>
-```
-
----
-
-### Creating a central generic fetch wrapper
-
-If you want to reuse `requestHomeApi` across features, promote it to a shared utility:
-
-```ts
-// app/lib/utils/api.ts
-export async function apiRequest<T>(
-  input: RequestInfo,
-  init?: RequestInit,
-): Promise<T> {
-  const response = await fetch(input, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "Request failed");
-  return payload.data as T;
-}
-```
-
-Then each feature api-layer imports from that one place:
-
-```ts
-// app/lib/home/api-layer.ts
-import { apiRequest } from "@/app/lib/utils/api";
-
-export function getHomeTodos() {
-  return apiRequest<HomeTodo[]>("/api/home", { method: "GET" });
-}
-```
-
-This is the preferred direction for centralization: keep feature functions, but have them all rely on one
-shared transport primitive.
-
-Same for the server-side `requestHomeBackend`:
-
-```ts
-// app/lib/utils/server-api.ts
-import "server-only";
-
-export async function serverRequest<T>(
-  input: string,
-  init?: RequestInit,
-): Promise<T> {
-  const response = await fetch(input, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
-  if (!response.ok)
-    throw new Error(`${response.status} ${response.statusText}`);
-  if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
-}
-```
+- `/v3.1/alpha/{code}` returns an **array** -- the service extracts `[0]`.
+- Country code validated as exactly 3 chars, uppercased (`countryCodeSchema`).
+- `CountryDetail extends Country` adds capital, currencies, languages, coatOfArms, maps, timezones, area.
+- Images rendered with `next/image` (remote pattern for `flagcdn.com`, `upload.wikimedia.org`, `restcountries.com`).
 
 ---
 
@@ -553,95 +461,145 @@ export async function serverRequest<T>(
 
 ### Why validation belongs in the route
 
-The route handler is the first stable server boundary for client traffic. It is the right
-place to:
+The route handler is the first stable server boundary for client traffic. It is the right place to:
 
-- validate request bodies with Zod
-- validate required proxy/auth headers
-- normalize error responses
-- reject malformed requests before they reach the service layer
+- Validate request bodies with Zod
+- Validate required proxy/auth headers
+- Normalize error responses
+- Reject malformed requests before they reach the service layer
 
-The service should assume it is receiving already-validated input.
+The service assumes it is receiving already-validated input.
 
-### Current Zod coverage
+### Zod coverage by feature
 
-- `homeMutationPayloadSchema` validates `POST` and `PUT`
-- `homeDeletePayloadSchema` validates `DELETE`
-- `proxyGuardHeadersSchema` validates proxy-injected request metadata
-
-### Current auth/session model
-
-There is no real auth provider yet. The app currently uses `proxy.ts` to attach:
-
-- a generated session cookie (`home-session`) when missing
-- `x-home-authenticated: true`
-- `x-home-session-id`
-- `x-home-request-id`
-
-This is intentionally a placeholder. Later, real session checks can replace this in
-`proxy.ts` without forcing a redesign of `route.ts` or `service.ts`.
-
-### Important tradeoff
-
-Routing GET through `/api/home` is not the lowest-latency option. The faster option is a
-direct server-component-to-service call. The current design intentionally gives that up to
-gain one consistent enforcement point for auth, headers, request validation, and future
-rate limiting.
+| Schema                      | Used in                                    |
+| --------------------------- | ------------------------------------------ |
+| `proxyGuardHeadersSchema`   | `app/api/home/route.ts`                    |
+| `homeMutationPayloadSchema` | `app/api/home/route.ts`                    |
+| `homeDeletePayloadSchema`   | `app/api/home/route.ts`                    |
+| `blogMutationPayloadSchema` | `app/api/blog/route.ts`, `[slug]/route.ts` |
+| `countryCodeSchema`         | `app/api/countries/[countryCode]/route.ts` |
+| `loginSchema`               | `app/api/auth/login/route.ts`              |
+| `registerSchema`            | `app/api/auth/register/route.ts`           |
 
 ---
 
-## Recommended Feature Structure
+## Current Auth/Session Model
 
-If the home feature keeps growing, this is a cleaner target structure:
+The app now has a real JWT auth system. `proxy.ts` still attaches `x-home-authenticated`,
+`x-home-session-id`, and `x-home-request-id` as a platform-level guard for the home API.
+The auth routes operate independently -- they use `requireAuth(request)` from `token.ts`
+which reads the `Authorization: Bearer <token>` header.
 
-```text
-app/
-  (default)/home/
-    HomePage.tsx
-    HomeCountriesClient.tsx
-    components/
-      HomeCountryList.tsx
-      HomeCountryCard.tsx
-      HomeCountryMedia.tsx
-      HomeCountryStats.tsx
-      HomeCountryLinks.tsx
+For production, replace `app/_lib/auth/service.ts` (in-memory Map) with a real database
+adapter. The token, password, schema, and route layers all stay the same.
 
-app/lib/home/
-  api-layer.ts
-  schemas.ts
-  service.ts
-  server-api.ts
-  presenters.ts
-  types.ts
-  hooks/
-    use-home-delete.ts
-    use-home-country-list.ts
+---
+
+## Folder Diagram
+
+```mermaid
+graph TD
+  subgraph Routes["App Router - Route Groups"]
+    AUTH["(auth)/\nlogin, register"]
+    DEFAULT["(default)/\nhome, blog, countries"]
+    DASHBOARD["(dashboard)/\ndashboard, profile, settings"]
+  end
+
+  subgraph API["API Routes - app/api/"]
+    APIHOME["home/\nGET POST PUT DELETE"]
+    APIBLOG["blog/\nGET POST\n[slug] GET PUT DELETE"]
+    APICOUNTRIES["countries/\nGET\n[countryCode] GET DELETE"]
+    APIAUTH["auth/\nregister, login, refresh, logout, me"]
+  end
+
+  subgraph LIB["Feature Libs - app/_lib/"]
+    LIBHOME["home/\ntypes, schemas, service\nserver-api, client-api, hooks"]
+    LIBBLOG["blog/\ntypes, schemas, service\nserver-api, client-api, hooks"]
+    LIBCOUNTRIES["countries/\ntypes, schemas, service\nserver-api, client-api, hooks"]
+    LIBAUTH["auth/\ntypes, schemas, password, token\nservice, client-api, hooks"]
+    CTXAUTH["contexts/\nauth-context.tsx"]
+  end
+
+  subgraph EXTERNAL["External APIs"]
+    RESTCOUNTRIES["restcountries.com/v3.1"]
+    JSONPLACEHOLDER["jsonplaceholder.typicode.com"]
+  end
+
+  PROXY["proxy.ts\nEdge middleware"]
+
+  ROOT["app/layout.tsx\nAuthProvider wrapper"]
+
+  ROOT --> AUTH
+  ROOT --> DEFAULT
+  ROOT --> DASHBOARD
+
+  DEFAULT -- "server-api.ts" --> APIHOME
+  DEFAULT -- "server-api.ts" --> APIBLOG
+  DEFAULT -- "server-api.ts" --> APICOUNTRIES
+
+  DASHBOARD -- "useRequireAuth()" --> LIBAUTH
+
+  APIHOME --> PROXY
+  APIBLOG --> PROXY
+  APICOUNTRIES --> PROXY
+
+  PROXY --> APIHOME
+  PROXY --> APIBLOG
+  PROXY --> APICOUNTRIES
+
+  APIHOME --> LIBHOME
+  APIBLOG --> LIBBLOG
+  APICOUNTRIES --> LIBCOUNTRIES
+  APIAUTH --> LIBAUTH
+
+  LIBHOME -- service.ts --> RESTCOUNTRIES
+  LIBCOUNTRIES -- service.ts --> RESTCOUNTRIES
+  LIBBLOG -- service.ts --> JSONPLACEHOLDER
+
+  AUTH -- "client-api.ts" --> APIAUTH
+  DEFAULT -- "client hooks" --> APIHOME
+  DEFAULT -- "client hooks" --> APIBLOG
+  DEFAULT -- "client hooks" --> APICOUNTRIES
+
+  CTXAUTH -- "silentRefresh" --> APIAUTH
 ```
 
-### Why this structure reads better
+---
 
-- Page-level files stay short and compositional.
-- Feature logic stays near the feature.
-- Hooks own stateful behavior.
-- Presenters own transformation logic.
-- Components become mostly JSX and props.
-- Services and routes stay transport- and backend-focused.
+## How To Add Another Feature
+
+Follow the exact same six-file pattern used by `home/`, `blog/`, and `countries/`:
+
+1. **`_lib/[feature]/types.ts`** -- TypeScript interfaces + `[Feature]ApiResponse<T>`
+2. **`_lib/[feature]/schemas.ts`** -- Zod schemas for route handler validation
+3. **`_lib/[feature]/service.ts`** -- `"server-only"`, calls external API directly
+4. **`_lib/[feature]/server-api.ts`** -- `"server-only"`, calls internal `/api/[feature]`, forwards cookies + base URL from headers
+5. **`_lib/[feature]/client-api.ts`** -- browser-side fetch wrapper calling `/api/[feature]`
+6. **`_lib/[feature]/hooks/use-[feature].ts`** -- `"use client"`, `useEffect` with mounted guard
+
+Then:
+
+- Add `app/api/[feature]/route.ts` -- Zod validation + service calls
+- Add `app/(default)/[feature]/page.tsx` -- passes params to a server component
+- Add `app/(default)/[feature]/_components/[Feature]Content.tsx` -- async server component using `server-api.ts`
 
 ---
 
 ## Patterns Summary
 
-| Goal                        | Pattern                                                                                             |
-| --------------------------- | --------------------------------------------------------------------------------------------------- |
-| Initial page data guarded   | `async` server component + internal API call through proxy + route validation                       |
-| Instant UI on mutation      | Optimistic local state update before awaiting the network                                           |
-| No backend logic in browser | `server-only` + service layer                                                                       |
-| Central auth/session checks | `proxy.ts` stamps headers/cookies, route validates and enforces                                     |
-| Clean components            | Hooks own behavior, presenters shape data, components mostly render                                 |
-| Better readability          | Split big feature components into server container, client boundary, and small presentational parts |
-| Better centralization       | Shared request wrappers, route helpers, and presenter helpers                                       |
-| Easy to test                | Each layer is a plain function — hooks, service, api-layer are all unit-testable independently      |
-| Avoid prop drilling         | Move shared state to a context provider wrapping the feature subtree                                |
+| Goal                        | Pattern                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------ |
+| Initial page data, guarded  | `async` server component -> `server-api.ts` -> internal `/api/` -> proxy -> route -> service     |
+| Fastest server-side read    | Direct service call (skip internal API hop -- only if no auth/header validation needed)          |
+| Client interactivity        | Client hook -> `client-api.ts` -> `/api/[feature]` -> service                                    |
+| Auth-protected routes       | `useRequireAuth(role?)` in `DashboardGuard` or page-level guard components                       |
+| Instant UI on mutation      | Optimistic local state update before awaiting the network, rollback on error                     |
+| No backend logic in browser | `"server-only"` + service layer                                                                  |
+| Token security              | Access token in React memory only; refresh token in HTTP-only cookie scoped to `/api/auth`       |
+| Central auth/session checks | `proxy.ts` stamps headers; route validates; `requireAuth()` / `requireRole()` for protected APIs |
+| Clean components            | Hooks own behavior, server components own data, client components own interaction state          |
+| Easy to test                | Each layer is a plain function -- hooks, service, api wrappers are all unit-testable             |
 
 ---
 
@@ -649,26 +607,29 @@ app/lib/home/
 
 ```
 Need data on first render with strict API enforcement?
-  → fetch in async server component via internal `/api/...`
+  -> fetch in async server component via internal /api/...
 
 Need the absolute fastest server-side read and you trust the caller?
-  → call the service directly
+  -> call the service directly from the server component
 
-Need to react to user interaction?
-  → handle in a client hook
+Need to react to user interaction (mutations, client state)?
+  -> handle in a client hook that delegates to client-api.ts
 
 Is a component doing data shaping and rendering at the same time?
-  → move shaping into a presenter/helper
+  -> move shaping into a presenter or view-model helper
 
-Is a component handling list state and rendering cards at the same time?
-  → add a client boundary component or a focused list hook
+Need auth in a route handler?
+  -> import requireAuth / requireRole from _lib/auth/token.ts
+
+Need to guard a whole route group?
+  -> add a DashboardGuard-style client component in the group's layout
 
 Do multiple features repeat fetch / route / error plumbing?
-  → centralize shared request and route helpers
+  -> centralize shared request and route helpers in _lib/utils/
 
 Need optimistic feedback?
-  → update local state first, then call hook, rollback on error
+  -> update local state first, then call hook, rollback on error
 
-Need to share mutation state across multiple components?
-  → lift state to a context provider, keep hook inside it
+Need to share auth state across multiple components?
+  -> useAuth() from auth-context -- access token is already global
 ```
