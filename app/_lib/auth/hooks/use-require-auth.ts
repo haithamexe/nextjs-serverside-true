@@ -3,8 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
-import { useAuth } from "../contexts/auth-context";
-import type { Role } from "../auth/types";
+import { useAuth } from "../../contexts/auth-context";
+import type { Role } from "../types";
 
 /**
  * Redirects to /login if the user is not authenticated.

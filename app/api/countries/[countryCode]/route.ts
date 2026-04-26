@@ -14,7 +14,7 @@ export async function GET(
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.errors[0]?.message ?? "Invalid country code" },
+        { error: parsed.error.issues[0]?.message ?? "Invalid country code" },
         { status: 400 },
       );
     }
@@ -39,7 +39,7 @@ export async function DELETE(
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.errors[0]?.message ?? "Invalid country code" },
+        { error: parsed.error.issues[0]?.message ?? "Invalid country code" },
         { status: 400 },
       );
     }

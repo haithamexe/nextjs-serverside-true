@@ -16,10 +16,10 @@ The app is organised into three route groups:
 A full JWT authentication system sits across the `_lib/auth/` library, the `app/api/auth/` route
 handlers, the `_lib/contexts/auth-context.tsx` React context, and the `(auth)` form pages.
 
-The next improvement area is **component streamlining**: the current layering is good, but some UI files
-still do too much at once. The right direction is to keep container components small, move domain-specific
-state logic into hooks, and move repeated data-shaping into shared helpers so the render tree reads like UI
-instead of business logic.
+**Client data fetching** uses `@tanstack/react-query` v5. All `useEffect` + `isMounted` hooks have been
+replaced with `useQuery` (for reads) and `useMutation` with `onMutate`/`onError` rollback (for writes).
+The shared `QueryClient` cache means every component that reads the same key sees the same data and the
+same optimistic updates -- no prop drilling, no duplicate state.
 
 ---
 
@@ -27,7 +27,7 @@ instead of business logic.
 
 ```text
 app/
-  layout.tsx                         # Root layout -- wraps app in <AuthProvider>
+  layout.tsx                         # Root layout -- wraps app in <QueryProvider> + <AuthProvider>
   globals.css
   favicon.ico
 
@@ -110,6 +110,7 @@ app/
   _lib/                              # Private lib folder -- not a route
     environments.ts
     contexts/
+      query-provider.tsx             # QueryProvider -- TanStack QueryClient wrapper
       auth-context.tsx               # AuthProvider -- access token in memory (React state only)
     auth/
       types.ts                       # Role, User, PublicUser, AccessTokenPayload, AuthResponse, ...
@@ -127,8 +128,8 @@ app/
       server-api.ts                  # server-only -- calls internal /api/home, forwards cookies
       client-api.ts                  # client -- calls /api/home
       hooks/
-        use-home-todos.ts
-        use-home-delete.ts
+        use-home-todos.ts            # useHomeTodos() -- useQuery(["home-todos"])
+        use-home-delete.ts           # useHomeDelete() -- useMutation + onMutate snapshot + onError rollback
     blog/
       types.ts                       # BlogPost, BlogMutationPayload, BlogApiResponse<T>
       schemas.ts                     # blogMutationPayloadSchema (Zod)
@@ -136,8 +137,8 @@ app/
       server-api.ts                  # server-only -- calls internal /api/blog, forwards cookies
       client-api.ts                  # client -- calls /api/blog
       hooks/
-        use-blog-posts.ts            # useBlogPosts() -- list hook with mounted guard
-        use-blog-post.ts             # useBlogPost(id) -- single post hook with mounted guard
+        use-blog-posts.ts            # useBlogPosts() -- useQuery(["blog-posts"])
+        use-blog-post.ts             # useBlogPost(id) -- useQuery(["blog-post", id]), enabled: id > 0
     countries/
       types.ts                       # Country, CountryDetail, CountriesApiResponse<T>
       schemas.ts                     # countryCodeSchema (Zod -- 3-char, uppercased)
@@ -145,8 +146,8 @@ app/
       server-api.ts                  # server-only -- calls internal /api/countries, forwards cookies
       client-api.ts                  # client -- calls /api/countries
       hooks/
-        use-countries.ts             # useCountries() -- list hook with mounted guard
-        use-country.ts               # useCountry(code) -- single country hook with mounted guard
+        use-countries.ts             # useCountries() -- useQuery(["countries"])
+        use-country.ts               # useCountry(code) -- useQuery(["country", code]), enabled: code.length === 3
 
 proxy.ts                             # Edge middleware -- stamps request-id, session, auth headers
 next.config.ts                       # Image remote patterns for flagcdn.com, restcountries.com, etc.
@@ -203,13 +204,14 @@ External API
 ```
 Browser UI
     |
-    |  useBlogPosts() / useHomeDelete() / useCountries() etc.
+    |  useMutation / useQuery from @tanstack/react-query
     v
-Client Hook  ("use client")
-  app/_lib/blog/hooks/use-blog-posts.ts
-  app/_lib/home/hooks/use-home-delete.ts
+TanStack Hook  ("use client")
+  app/_lib/home/hooks/use-home-delete.ts    useMutation -- onMutate snapshot, onError rollback
+  app/_lib/blog/hooks/use-blog-posts.ts     useQuery(["blog-posts"])
+  app/_lib/countries/hooks/use-countries.ts useQuery(["countries"])
     |
-    |  calls client-api helper
+    |  mutationFn / queryFn delegates to client-api
     v
 Client API Layer
   app/_lib/blog/client-api.ts
@@ -221,6 +223,13 @@ Client API Layer
 Route Handler  ->  Service  ->  External API
   (same stack as server read path above)
 ```
+
+**Optimistic delete flow** (`useHomeDelete`):
+
+1. `onMutate` -- cancel in-flight refetches, snapshot current cache, remove item from cache instantly
+2. Request fires in background
+3. `onError` -- restore snapshot if request fails (item reappears automatically)
+4. `onSettled` -- invalidate query so cache re-syncs with server truth
 
 ### Auth path
 
@@ -308,16 +317,32 @@ guarantees every GET passes through the same guardrail stack as writes:
 - Request validation and shape enforcement live in the route handler
 - Service logic stays pure -- it does not know about auth, headers, or sessions
 
-### 3. Optimistic client delete (instant perceived response)
+### 3. Optimistic client delete (instant perceived response + automatic rollback)
 
-When a user clicks Delete on the Home page, the item disappears immediately in local state
-before the server confirms the operation.
+When a user clicks Delete, the item disappears immediately. If the server fails, it reappears
+automatically. This is handled by TanStack Query's `onMutate` / `onError` lifecycle -- no
+manual try/catch or local `useState` needed.
 
 ```ts
-const handleDelete = async (id: string) => {
-  setTodosList((prev) => prev.filter((todo) => todo.cca3 !== id)); // instant
-  await deletePost(id); // fires in background, rolls back on error
-};
+// app/_lib/home/hooks/use-home-delete.ts
+return useMutation({
+  mutationFn: deleteHomePost,
+  onMutate: async (countryCode) => {
+    await queryClient.cancelQueries({ queryKey: ["home-todos"] }); // stop race conditions
+    const previous = queryClient.getQueryData<HomeTodo[]>(["home-todos"]); // snapshot
+    queryClient.setQueryData<HomeTodo[]>(
+      ["home-todos"],
+      (old) => old?.filter((t) => t.cca3 !== countryCode) ?? [],
+    ); // instant removal
+    return { previous };
+  },
+  onError: (_err, _id, ctx) => {
+    if (ctx?.previous) queryClient.setQueryData(["home-todos"], ctx.previous); // restore
+  },
+  onSettled: () => {
+    void queryClient.invalidateQueries({ queryKey: ["home-todos"] }); // re-sync
+  },
+});
 ```
 
 ### 4. Proxy provides a framework-level request gate
@@ -348,7 +373,8 @@ the browser bundle.
 | `app/_lib/[feature]/service.ts`                  | Server only | Raw fetch to external API. `"server-only"` guard.                     |
 | `app/_lib/[feature]/server-api.ts`               | Server only | Calls internal `/api/[feature]` from server components.               |
 | `app/_lib/[feature]/client-api.ts`               | Client only | Calls `/api/[feature]` from the browser. Typed wrappers.              |
-| `app/_lib/[feature]/hooks/use-*.ts`              | Client only | React hooks. Delegate to client-api. Own mounted-guard pattern.       |
+| `app/_lib/[feature]/hooks/use-*.ts`              | Client only | TanStack `useQuery` / `useMutation`. Delegate to client-api.          |
+| `app/_lib/contexts/query-provider.tsx`           | Client only | `QueryClient` singleton + `QueryClientProvider` wrapper.              |
 | `app/api/[feature]/route.ts`                     | Server only | Validates proxy/auth headers + Zod payload, then calls service.       |
 | `proxy.ts`                                       | Edge        | Stamps pseudo-session/auth headers and request IDs before API routes. |
 | `app/_lib/auth/password.ts`                      | Server only | bcryptjs hashPassword / verifyPassword (12 rounds).                   |

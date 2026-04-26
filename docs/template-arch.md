@@ -28,13 +28,14 @@ order with no placeholders, no in-memory stubs, no dead folders, and no extra ab
 
 ## What This Template Does NOT Include
 
-Remove these patterns from any existing project before generating the template:
+These patterns exist in the current learning project but must be replaced when scaffolding
+a production template. Items marked **DONE** have already been removed from the real project.
 
 - `x-home-authenticated: "true"` hardcoded in middleware — replace with real JWT cookie check
 - In-memory `Map<string, User>` user store — replace with Prisma
 - Empty folders (`app/utils/`, `app/_lib/lib/`, `app/(default)/_home/`) — delete them
 - `app/_lib/environments.ts` with `testValue` — replace with `@t3-oss/env-nextjs`
-- Raw `useEffect` + manual `isMounted` guard in hooks — replace with TanStack Query
+- **DONE** -- Raw `useEffect` + manual `isMounted` guard in hooks -- replaced with TanStack Query
 - Duplicate `home/` folder inside `(default)/` and `(default)/_home/` — keep only the routable one
 - `console.log` debugging statements in route handlers
 - `assertProxyGuard` checking headers that are always `"true"` — proxy should check the actual auth cookie

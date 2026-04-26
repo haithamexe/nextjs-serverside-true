@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { getBlogPostFromApi } from "../../../_lib/blog/server-api";
+import { getBlogPostFromApi } from "@/app/_lib/blog/server-api";
 
 export default async function PostContent({ slug }: { slug: string }) {
   const id = Number(slug);

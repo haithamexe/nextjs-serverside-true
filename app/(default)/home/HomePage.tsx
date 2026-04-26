@@ -7,7 +7,7 @@ const HomePage = async () => {
   return (
     <div>
       <h1>HomePage</h1>
-      <HomePageList todos={todos} />
+      <HomePageList initialData={todos} />
     </div>
   );
 };

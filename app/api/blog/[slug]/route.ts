@@ -42,12 +42,12 @@ export async function PUT(
       return NextResponse.json({ error: "Invalid post ID" }, { status: 400 });
     }
 
-    const body: unknown = await request.json();
+    const body = (await request.json()) as Record<string, unknown>;
     const parsed = blogMutationPayloadSchema.safeParse({ ...body, id });
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.errors[0]?.message ?? "Invalid request body" },
+        { error: parsed.error.issues[0]?.message ?? "Invalid request body" },
         { status: 422 },
       );
     }

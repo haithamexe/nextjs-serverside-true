@@ -2,19 +2,14 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { getCountryFromApi } from "../../../_lib/countries/server-api";
+import { getCountryFromApi } from "@/app/_lib/countries/server-api";
 
 export default async function CountryDetail({
   countryCode,
 }: {
   countryCode: string;
 }) {
-  let country;
-  try {
-    country = await getCountryFromApi(countryCode);
-  } catch {
-    notFound();
-  }
+  const country = await getCountryFromApi(countryCode).catch(() => notFound());
 
   const currencies = country.currencies
     ? Object.values(country.currencies)

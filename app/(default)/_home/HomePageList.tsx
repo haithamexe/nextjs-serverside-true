@@ -1,8 +1,9 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
+import { getHomeTodos } from "@/app/_lib/home/client-api";
 import { useHomeDelete } from "@/app/_lib/home/hooks/use-home-delete";
 import type { HomeTodo } from "@/app/_lib/home/types";
 
@@ -11,20 +12,12 @@ interface HomePageListProps {
 }
 
 const HomePageList = ({ todos }: HomePageListProps) => {
-  const [todosList, setTodosList] = useState<HomeTodo[]>(todos);
-  const { deletePost } = useHomeDelete();
-
-  const handleDelete = async (id: string) => {
-    const previousTodos = todosList;
-
-    setTodosList((prev) => prev.filter((todo) => todo.cca3 !== id));
-
-    try {
-      await deletePost(id);
-    } catch {
-      setTodosList(previousTodos);
-    }
-  };
+  const { data: todosList = [] } = useQuery({
+    queryKey: ["home-todos"],
+    queryFn: getHomeTodos,
+    initialData: todos,
+  });
+  const { mutate: deletePost } = useHomeDelete();
 
   if (todosList.length === 0) {
     return <p className="p-5">No todos available.</p>;
@@ -222,7 +215,7 @@ const HomePageList = ({ todos }: HomePageListProps) => {
 
             <button
               onClick={() => {
-                void handleDelete(country.cca3);
+                void deletePost(country.cca3);
               }}
               className="mt-4 rounded-lg bg-red-500 px-3 py-1 text-xs text-white"
             >
